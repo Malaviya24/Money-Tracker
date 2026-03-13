@@ -45,17 +45,72 @@ export default function CreateSpace() {
   const [budget, setBudget] = useState("");
   const [currency, setCurrency] = useState("INR");
 
+  const getCreateSpaceErrorMessage = (error: unknown) => {
+    let rawMessage = "Unknown error";
+
+    if (error instanceof Error) {
+      rawMessage = error.message;
+    } else if (typeof error === "object" && error !== null) {
+      const maybeMessage = (error as { message?: unknown }).message;
+      if (typeof maybeMessage === "string" && maybeMessage.trim()) {
+        rawMessage = maybeMessage;
+      }
+    } else if (typeof error === "string" && error.trim()) {
+      rawMessage = error;
+    }
+
+    const normalizedMessage = rawMessage.toLowerCase();
+
+    if (
+      normalizedMessage.includes("failed to fetch") ||
+      normalizedMessage.includes("fetch failed") ||
+      normalizedMessage.includes("name_not_resolved") ||
+      normalizedMessage.includes("network") ||
+      normalizedMessage.includes("getaddrinfo")
+    ) {
+      return "Cannot reach Supabase. Check VITE_SUPABASE_URL in .env and your internet connection.";
+    }
+
+    if (
+      normalizedMessage.includes("401") ||
+      normalizedMessage.includes("jwt") ||
+      normalizedMessage.includes("unauthorized") ||
+      normalizedMessage.includes("api key")
+    ) {
+      return "Supabase API key is invalid for this project. Update VITE_SUPABASE_PUBLISHABLE_KEY in .env.";
+    }
+
+    if (normalizedMessage.includes("row-level security")) {
+      return "Database policy blocked this action. Apply the latest Clerk schema migration, then try again.";
+    }
+
+    if (
+      normalizedMessage.includes("invalid input syntax for type uuid") ||
+      normalizedMessage.includes("violates foreign key constraint")
+    ) {
+      return "Database auth schema mismatch detected. Update DB to Clerk-compatible user_id (TEXT), then try again.";
+    }
+
+    return rawMessage;
+  };
+
   const createSpaceMutation = useMutation({
     mutationFn: async () => {
       if (!userId) throw new Error("Not authenticated");
+      if (!selectedType) throw new Error("Please select a space type");
+
+      const parsedBudget = Number(budget);
+      if (!Number.isFinite(parsedBudget) || parsedBudget <= 0) {
+        throw new Error("Please enter a valid budget");
+      }
       
       const selectedTypeData = spaceTypes.find((t) => t.value === selectedType);
       
       const { error } = await supabase.from("spaces").insert({
         user_id: userId,
         name: name.trim(),
-        type: selectedType!,
-        budget: parseFloat(budget),
+        type: selectedType,
+        budget: parsedBudget,
         currency: currency,
         icon: selectedTypeData?.emoji || "📁",
         spent: 0,
@@ -69,7 +124,7 @@ export default function CreateSpace() {
       navigate("/spaces");
     },
     onError: (error) => {
-      toast.error("Failed to create space: " + error.message);
+      toast.error("Failed to create space: " + getCreateSpaceErrorMessage(error));
     },
   });
 

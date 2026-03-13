@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+import { useEffect, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 
 export interface Notification {
   id: string;
@@ -13,38 +14,20 @@ export interface Notification {
   created_at: string;
 }
 
-// Get the Supabase user ID (UUID format) from the current session
-async function getSupabaseUserId(): Promise<string | null> {
-  const { data: { session } } = await supabase.auth.getSession();
-  return session?.user?.id || null;
-}
-
 export function useNotifications() {
-  const [supabaseUserId, setSupabaseUserId] = useState<string | null>(null);
+  const { userId, isLoading: userLoading } = useSupabaseUser();
   const queryClient = useQueryClient();
-
-  // Get and cache the Supabase user ID
-  useEffect(() => {
-    getSupabaseUserId().then(setSupabaseUserId);
-    
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async () => {
-      const userId = await getSupabaseUserId();
-      setSupabaseUserId(userId);
-    });
-
-    return () => subscription.unsubscribe();
-  }, []);
 
   // Use React Query for efficient caching and deduplication
   const { data: notifications = [], isLoading } = useQuery({
-    queryKey: ["notifications", supabaseUserId],
+    queryKey: ["notifications", userId],
     queryFn: async () => {
-      if (!supabaseUserId) return [];
+      if (!userId) return [];
       
       const { data, error } = await supabase
         .from("notifications")
         .select("*")
-        .eq("user_id", supabaseUserId)
+        .eq("user_id", userId)
         .order("created_at", { ascending: false })
         .limit(20);
 
@@ -55,7 +38,7 @@ export function useNotifications() {
 
       return (data || []) as Notification[];
     },
-    enabled: !!supabaseUserId,
+    enabled: !!userId,
     staleTime: 30000, // Cache for 30 seconds
     gcTime: 60000, // Keep in cache for 1 minute
   });
@@ -69,23 +52,23 @@ export function useNotifications() {
       .eq("id", notificationId);
 
     if (!error) {
-      queryClient.invalidateQueries({ queryKey: ["notifications", supabaseUserId] });
+      queryClient.invalidateQueries({ queryKey: ["notifications", userId] });
     }
-  }, [supabaseUserId, queryClient]);
+  }, [userId, queryClient]);
 
   const markAllAsRead = useCallback(async () => {
-    if (!supabaseUserId) return;
+    if (!userId) return;
 
     const { error } = await supabase
       .from("notifications")
       .update({ read: true })
-      .eq("user_id", supabaseUserId)
+      .eq("user_id", userId)
       .eq("read", false);
 
     if (!error) {
-      queryClient.invalidateQueries({ queryKey: ["notifications", supabaseUserId] });
+      queryClient.invalidateQueries({ queryKey: ["notifications", userId] });
     }
-  }, [supabaseUserId, queryClient]);
+  }, [userId, queryClient]);
 
   const deleteNotification = useCallback(async (notificationId: string) => {
     const { error } = await supabase
@@ -94,27 +77,27 @@ export function useNotifications() {
       .eq("id", notificationId);
 
     if (!error) {
-      queryClient.invalidateQueries({ queryKey: ["notifications", supabaseUserId] });
+      queryClient.invalidateQueries({ queryKey: ["notifications", userId] });
     }
-  }, [supabaseUserId, queryClient]);
+  }, [userId, queryClient]);
 
   const refetch = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ["notifications", supabaseUserId] });
-  }, [supabaseUserId, queryClient]);
+    queryClient.invalidateQueries({ queryKey: ["notifications", userId] });
+  }, [userId, queryClient]);
 
   // Subscribe to real-time updates
   useEffect(() => {
-    if (!supabaseUserId) return;
+    if (!userId) return;
 
     const channel = supabase
-      .channel("notifications-changes")
+      .channel(`notifications-changes-${userId}`)
       .on(
         "postgres_changes",
         {
           event: "*",
           schema: "public",
           table: "notifications",
-          filter: `user_id=eq.${supabaseUserId}`,
+          filter: `user_id=eq.${userId}`,
         },
         () => {
           refetch();
@@ -125,12 +108,12 @@ export function useNotifications() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [supabaseUserId, refetch]);
+  }, [userId, refetch]);
 
   return {
     notifications,
     unreadCount,
-    isLoading,
+    isLoading: userLoading || isLoading,
     markAsRead,
     markAllAsRead,
     deleteNotification,
